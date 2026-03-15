@@ -46,6 +46,20 @@ async function ensureTempRoot() {
   await fs.ensureDir(TEMP_ROOT);
 }
 
+function findActiveJobByNumber(number) {
+  for (const [, job] of jobs) {
+    if (
+      job.number === number &&
+      !job.delivered &&
+      job.status !== "closed" &&
+      job.status !== "error"
+    ) {
+      return job;
+    }
+  }
+  return null;
+}
+
 async function buildPackedSession(sessionDir) {
   const files = await fs.readdir(sessionDir);
   const packed = {
@@ -76,29 +90,29 @@ async function buildPackedSession(sessionDir) {
 async function sendSessionToInbox(sock, number, sessionString) {
   const jid = `${number}@s.whatsapp.net`;
 
-  const sessionMessage = [
+  // 1. Send clean session only for easy copy
+  await sock.sendMessage(jid, {
+    text: sessionString
+  });
+
+  // 2. Send support/help separately
+  const supportMessage = [
     `╭━━━〔 ${GENERATOR_NAME} 〕━━━╮`,
-    "│ ✅ Session Generated",
+    "│ ✅ Session Generated Successfully",
     "│",
-    "│ Your session is ready.",
-    "│ Paste it into Heroku Config Vars.",
+    "│ Copy the session above and paste it",
+    "│ into Heroku Config Vars as SESSION_ID.",
     "╰━━━━━━━━━━━━━━━━━━━━━━━╯",
     "",
-    "*SESSION_ID:*",
-    sessionString
-  ].join("\n");
-
-  const supportMessage = [
     "🤖 *Lite-Ollver-MD Support*",
     "",
     `👥 Support Group: ${SUPPORT_GROUP}`,
-    `👑 Owner Contact: ${OWNER_CONTACT}`,
-    "",
-    "Your session has been delivered successfully."
+    `👑 Owner Contact: ${OWNER_CONTACT}`
   ].join("\n");
 
-  await sock.sendMessage(jid, { text: sessionMessage });
-  await sock.sendMessage(jid, { text: supportMessage });
+  await sock.sendMessage(jid, {
+    text: supportMessage
+  });
 }
 
 async function cleanupJob(jobId, delayMs = 60000) {
@@ -151,7 +165,6 @@ async function bootSocket(job) {
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
     const current = jobs.get(job.id);
-
     if (!current) return;
 
     console.log(`[${job.id}] connection.update`, {
@@ -166,15 +179,13 @@ async function bootSocket(job) {
     }
 
     try {
-      if (qr && !current.pairingRequested) {
+      if (qr && !current.pairingRequested && !current.delivered) {
         current.pairingRequested = true;
         current.status = "requesting_pairing_code";
 
-        console.log(
-          `[${job.id}] requesting pairing code for ${current.number}`
-        );
-
+        console.log(`[${job.id}] requesting pairing code for ${current.number}`);
         const code = await sock.requestPairingCode(current.number);
+
         current.pairingCode = formatPairCode(code);
         current.status = "pairing_code_ready";
 
@@ -188,6 +199,8 @@ async function bootSocket(job) {
 
     if (connection === "open") {
       try {
+        if (current.delivered) return;
+
         current.status = "connected";
         console.log(`[${job.id}] connection opened, building session`);
 
@@ -196,6 +209,7 @@ async function bootSocket(job) {
 
         current.status = "delivered";
         current.delivered = true;
+        current.pairingRequested = true;
 
         console.log(`[${job.id}] session delivered to WhatsApp inbox`);
         await cleanupJob(job.id, 45000);
@@ -217,6 +231,7 @@ async function bootSocket(job) {
         console.log(`[${job.id}] restarting socket after 515 stream error`);
 
         try {
+          current.pairingRequested = true;
           await bootSocket(current);
         } catch (error) {
           current.status = "error";
@@ -249,6 +264,18 @@ async function startPairing(number, jobId) {
   await ensureTempRoot();
 
   const formattedNumber = cleanNumber(number);
+
+  const existingJob = findActiveJobByNumber(formattedNumber);
+  if (existingJob) {
+    console.log(
+      `[${jobId}] active job already exists for ${formattedNumber}: ${existingJob.id}`
+    );
+    return {
+      reused: true,
+      jobId: existingJob.id
+    };
+  }
+
   const sessionDir = path.join(TEMP_ROOT, jobId);
   await fs.ensureDir(sessionDir);
 
@@ -269,8 +296,12 @@ async function startPairing(number, jobId) {
   };
 
   jobs.set(jobId, job);
-
   await bootSocket(job);
+
+  return {
+    reused: false,
+    jobId
+  };
 }
 
 app.get("/", (req, res) => {
@@ -303,12 +334,15 @@ app.post("/api/pair", async (req, res) => {
     }
 
     const jobId = createJobId();
-    await startPairing(number, jobId);
+    const result = await startPairing(number, jobId);
 
     return res.json({
       ok: true,
-      jobId,
-      message: "Pairing process started."
+      jobId: result.jobId,
+      reused: result.reused,
+      message: result.reused
+        ? "Existing pairing process reused."
+        : "Pairing process started."
     });
   } catch (error) {
     console.error("[api/pair] failed:", error);
