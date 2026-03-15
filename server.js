@@ -79,6 +79,8 @@ async function cleanupJob(jobId, delayMs = 60000) {
 
   setTimeout(async () => {
     try {
+      console.log(`[${jobId}] cleanup started`);
+
       if (job.socket?.ws?.readyState === 1) {
         await job.socket.logout().catch(() => {});
       }
@@ -88,8 +90,9 @@ async function cleanupJob(jobId, delayMs = 60000) {
       }
 
       jobs.delete(jobId);
+      console.log(`[${jobId}] cleanup finished`);
     } catch (error) {
-      console.error("Cleanup error:", error.message);
+      console.error(`[${jobId}] Cleanup error:`, error.message);
     }
   }, delayMs);
 }
@@ -129,8 +132,12 @@ async function startPairing(number, jobId) {
   const sessionDir = path.join(TEMP_ROOT, jobId);
   await fs.ensureDir(sessionDir);
 
+  console.log(`[${jobId}] startPairing called for ${formattedNumber}`);
+
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
   const { version } = await fetchLatestBaileysVersion();
+
+  console.log(`[${jobId}] using Baileys version ${version.join(".")}`);
 
   const sock = makeWASocket({
     version,
@@ -165,6 +172,13 @@ async function startPairing(number, jobId) {
 
     if (!current) return;
 
+    console.log(`[${jobId}] connection.update`, {
+      connection,
+      hasQr: !!qr,
+      statusCode: lastDisconnect?.error?.output?.statusCode || null,
+      errorMessage: lastDisconnect?.error?.message || null
+    });
+
     if (connection === "connecting") {
       current.status = "connecting";
     }
@@ -174,18 +188,24 @@ async function startPairing(number, jobId) {
         current.pairingRequested = true;
         current.status = "requesting_pairing_code";
 
+        console.log(`[${jobId}] requesting pairing code for ${formattedNumber}`);
         const code = await sock.requestPairingCode(formattedNumber);
+
         current.pairingCode = formatPairCode(code);
         current.status = "pairing_code_ready";
+
+        console.log(`[${jobId}] pairing code ready: ${current.pairingCode}`);
       }
     } catch (error) {
       current.status = "error";
       current.error = `Failed to generate pairing code: ${error.message}`;
+      console.error(`[${jobId}] pairing code generation failed:`, error);
     }
 
     if (connection === "open") {
       try {
         current.status = "connected";
+        console.log(`[${jobId}] connection opened, building session`);
 
         const sessionString = await buildPackedSession(sessionDir);
         await sendSessionToInbox(sock, formattedNumber, sessionString);
@@ -193,10 +213,12 @@ async function startPairing(number, jobId) {
         current.status = "delivered";
         current.delivered = true;
 
+        console.log(`[${jobId}] session delivered to WhatsApp inbox`);
         await cleanupJob(jobId, 45000);
       } catch (error) {
         current.status = "error";
         current.error = error.message;
+        console.error(`[${jobId}] failed after connection open:`, error);
       }
     }
 
@@ -211,6 +233,11 @@ async function startPairing(number, jobId) {
         } else if (!current.error) {
           current.error = "Connection closed before session delivery.";
         }
+
+        console.error(`[${jobId}] connection closed before delivery`, {
+          statusCode,
+          error: current.error
+        });
       }
     }
   });
@@ -236,6 +263,8 @@ app.post("/api/pair", async (req, res) => {
   try {
     const number = cleanNumber(req.body.number || "");
 
+    console.log(`[api/pair] request received for ${number}`);
+
     if (!number || number.length < 10) {
       return res.status(400).json({
         ok: false,
@@ -252,6 +281,7 @@ app.post("/api/pair", async (req, res) => {
       message: "Pairing process started."
     });
   } catch (error) {
+    console.error("[api/pair] failed:", error);
     return res.status(500).json({
       ok: false,
       message: error.message || "Failed to start pairing process."
