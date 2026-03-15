@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Deploy Lite-Ollver-MD</title>
+  <link rel="stylesheet" href="./deploy.css" />
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="icon">🚀</div>
+      <h1>Deploy Lite-Ollver-MD</h1>
+      <p class="sub">
+        Deploy your WhatsApp bot to Heroku with one click.
+      </p>
+
+      <div class="notice">
+        <strong>Important:</strong> make sure your forked repository is named
+        <span>Lite-Ollver-MD</span> to avoid deployment errors.
+      </div>
+
+      <label for="githubUsername">GitHub Username</label>
+      <input
+        id="githubUsername"
+        type="text"
+        placeholder="Enter your GitHub username"
+        autocomplete="off"
+      />
+
+      <div class="actions">
+        <button id="deployBtn">🚀 Deploy to Heroku</button>
+        <a
+          id="forkBtn"
+          class="secondary"
+          href="https://github.com/RichieeTechsHub/Lite-Ollver-MD/fork"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          🍴 Fork Repo First
+        </a>
+      </div>
+
+      <div id="message" class="message hidden"></div>
+
+      <a class="back" href="/">← Back to Home</a>
+    </div>
+  </div>
+
+  <script src="./deploy.js"></script>
+</body>
+</html>

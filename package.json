@@ -1,0 +1,18 @@
+{
+  "name": "lite-ollver-session",
+  "version": "1.0.0",
+  "description": "Lite-Ollver-MD session generator for Render",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "author": "RichiieeTheeGoat",
+  "license": "MIT",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.5",
+    "express": "^4.19.2",
+    "fs-extra": "^11.2.0",
+    "pino": "^8.19.0"
+  }
+}
