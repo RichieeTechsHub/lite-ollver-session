@@ -6,7 +6,8 @@ const {
   default: makeWASocket,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
-  DisconnectReason
+  DisconnectReason,
+  Browsers
 } = require("@whiskeysockets/baileys");
 
 const app = express();
@@ -136,7 +137,7 @@ async function startPairing(number, jobId) {
     logger,
     auth: state,
     printQRInTerminal: false,
-    browser: ["Lite-Ollver Session", "Chrome", "1.0.0"],
+    browser: Browsers.macOS("Chrome"),
     markOnlineOnConnect: false,
     syncFullHistory: false
   });
@@ -150,7 +151,8 @@ async function startPairing(number, jobId) {
     pairingCode: null,
     createdAt: new Date().toISOString(),
     delivered: false,
-    error: null
+    error: null,
+    pairingRequested: false
   };
 
   jobs.set(jobId, job);
@@ -158,13 +160,27 @@ async function startPairing(number, jobId) {
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect } = update;
+    const { connection, lastDisconnect, qr } = update;
     const current = jobs.get(jobId);
 
     if (!current) return;
 
     if (connection === "connecting") {
       current.status = "connecting";
+    }
+
+    try {
+      if (qr && !current.pairingRequested) {
+        current.pairingRequested = true;
+        current.status = "requesting_pairing_code";
+
+        const code = await sock.requestPairingCode(formattedNumber);
+        current.pairingCode = formatPairCode(code);
+        current.status = "pairing_code_ready";
+      }
+    } catch (error) {
+      current.status = "error";
+      current.error = `Failed to generate pairing code: ${error.message}`;
     }
 
     if (connection === "open") {
@@ -198,25 +214,6 @@ async function startPairing(number, jobId) {
       }
     }
   });
-
-  setTimeout(async () => {
-    try {
-      const code = await sock.requestPairingCode(formattedNumber);
-      const current = jobs.get(jobId);
-
-      if (!current) return;
-
-      current.pairingCode = formatPairCode(code);
-      current.status = "pairing_code_ready";
-    } catch (error) {
-      const current = jobs.get(jobId);
-
-      if (!current) return;
-
-      current.status = "error";
-      current.error = "Failed to generate pairing code. Try again.";
-    }
-  }, 2500);
 }
 
 app.get("/", (req, res) => {
