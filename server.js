@@ -124,6 +124,7 @@ async function sendSessionToInbox(sock, number, sessionString) {
 async function startPairing(number, jobId) {
   await ensureTempRoot();
 
+  const formattedNumber = cleanNumber(number);
   const sessionDir = path.join(TEMP_ROOT, jobId);
   await fs.ensureDir(sessionDir);
 
@@ -142,7 +143,7 @@ async function startPairing(number, jobId) {
 
   const job = {
     id: jobId,
-    number,
+    number: formattedNumber,
     sessionDir,
     socket: sock,
     status: "starting",
@@ -171,7 +172,7 @@ async function startPairing(number, jobId) {
         current.status = "connected";
 
         const sessionString = await buildPackedSession(sessionDir);
-        await sendSessionToInbox(sock, number, sessionString);
+        await sendSessionToInbox(sock, formattedNumber, sessionString);
 
         current.status = "delivered";
         current.delivered = true;
@@ -200,7 +201,7 @@ async function startPairing(number, jobId) {
 
   setTimeout(async () => {
     try {
-      const code = await sock.requestPairingCode(number);
+      const code = await sock.requestPairingCode(formattedNumber);
       const current = jobs.get(jobId);
 
       if (!current) return;
@@ -213,10 +214,9 @@ async function startPairing(number, jobId) {
       if (!current) return;
 
       current.status = "error";
-      current.error =
-        "Failed to generate pairing code. Check the number and try again.";
+      current.error = "Failed to generate pairing code. Try again.";
     }
-  }, 1800);
+  }, 2500);
 }
 
 app.get("/", (req, res) => {
