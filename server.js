@@ -73,30 +73,6 @@ async function buildPackedSession(sessionDir) {
   ).toString("base64")}`;
 }
 
-async function cleanupJob(jobId, delayMs = 60000) {
-  const job = jobs.get(jobId);
-  if (!job) return;
-
-  setTimeout(async () => {
-    try {
-      console.log(`[${jobId}] cleanup started`);
-
-      if (job.socket?.ws?.readyState === 1) {
-        await job.socket.logout().catch(() => {});
-      }
-
-      if (job.sessionDir) {
-        await fs.remove(job.sessionDir).catch(() => {});
-      }
-
-      jobs.delete(jobId);
-      console.log(`[${jobId}] cleanup finished`);
-    } catch (error) {
-      console.error(`[${jobId}] Cleanup error:`, error.message);
-    }
-  }, delayMs);
-}
-
 async function sendSessionToInbox(sock, number, sessionString) {
   const jid = `${number}@s.whatsapp.net`;
 
@@ -125,19 +101,38 @@ async function sendSessionToInbox(sock, number, sessionString) {
   await sock.sendMessage(jid, { text: supportMessage });
 }
 
-async function startPairing(number, jobId) {
-  await ensureTempRoot();
+async function cleanupJob(jobId, delayMs = 60000) {
+  const job = jobs.get(jobId);
+  if (!job) return;
 
-  const formattedNumber = cleanNumber(number);
-  const sessionDir = path.join(TEMP_ROOT, jobId);
-  await fs.ensureDir(sessionDir);
+  setTimeout(async () => {
+    try {
+      const current = jobs.get(jobId);
+      if (!current) return;
 
-  console.log(`[${jobId}] startPairing called for ${formattedNumber}`);
+      console.log(`[${jobId}] cleanup started`);
 
-  const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+      if (current.socket?.ws?.readyState === 1) {
+        await current.socket.logout().catch(() => {});
+      }
+
+      if (current.sessionDir) {
+        await fs.remove(current.sessionDir).catch(() => {});
+      }
+
+      jobs.delete(jobId);
+      console.log(`[${jobId}] cleanup finished`);
+    } catch (error) {
+      console.error(`[${jobId}] cleanup error:`, error.message);
+    }
+  }, delayMs);
+}
+
+async function bootSocket(job) {
+  const { state, saveCreds } = await useMultiFileAuthState(job.sessionDir);
   const { version } = await fetchLatestBaileysVersion();
 
-  console.log(`[${jobId}] using Baileys version ${version.join(".")}`);
+  console.log(`[${job.id}] using Baileys version ${version.join(".")}`);
 
   const sock = makeWASocket({
     version,
@@ -149,30 +144,17 @@ async function startPairing(number, jobId) {
     syncFullHistory: false
   });
 
-  const job = {
-    id: jobId,
-    number: formattedNumber,
-    sessionDir,
-    socket: sock,
-    status: "starting",
-    pairingCode: null,
-    createdAt: new Date().toISOString(),
-    delivered: false,
-    error: null,
-    pairingRequested: false
-  };
-
-  jobs.set(jobId, job);
+  job.socket = sock;
 
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
-    const current = jobs.get(jobId);
+    const current = jobs.get(job.id);
 
     if (!current) return;
 
-    console.log(`[${jobId}] connection.update`, {
+    console.log(`[${job.id}] connection.update`, {
       connection,
       hasQr: !!qr,
       statusCode: lastDisconnect?.error?.output?.statusCode || null,
@@ -188,42 +170,62 @@ async function startPairing(number, jobId) {
         current.pairingRequested = true;
         current.status = "requesting_pairing_code";
 
-        console.log(`[${jobId}] requesting pairing code for ${formattedNumber}`);
-        const code = await sock.requestPairingCode(formattedNumber);
+        console.log(
+          `[${job.id}] requesting pairing code for ${current.number}`
+        );
 
+        const code = await sock.requestPairingCode(current.number);
         current.pairingCode = formatPairCode(code);
         current.status = "pairing_code_ready";
 
-        console.log(`[${jobId}] pairing code ready: ${current.pairingCode}`);
+        console.log(`[${job.id}] pairing code ready: ${current.pairingCode}`);
       }
     } catch (error) {
       current.status = "error";
       current.error = `Failed to generate pairing code: ${error.message}`;
-      console.error(`[${jobId}] pairing code generation failed:`, error);
+      console.error(`[${job.id}] pairing code generation failed:`, error);
     }
 
     if (connection === "open") {
       try {
         current.status = "connected";
-        console.log(`[${jobId}] connection opened, building session`);
+        console.log(`[${job.id}] connection opened, building session`);
 
-        const sessionString = await buildPackedSession(sessionDir);
-        await sendSessionToInbox(sock, formattedNumber, sessionString);
+        const sessionString = await buildPackedSession(current.sessionDir);
+        await sendSessionToInbox(sock, current.number, sessionString);
 
         current.status = "delivered";
         current.delivered = true;
 
-        console.log(`[${jobId}] session delivered to WhatsApp inbox`);
-        await cleanupJob(jobId, 45000);
+        console.log(`[${job.id}] session delivered to WhatsApp inbox`);
+        await cleanupJob(job.id, 45000);
       } catch (error) {
         current.status = "error";
         current.error = error.message;
-        console.error(`[${jobId}] failed after connection open:`, error);
+        console.error(`[${job.id}] failed after connection open:`, error);
       }
     }
 
     if (connection === "close") {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
+      console.log(`[${job.id}] connection closed with statusCode ${statusCode}`);
+
+      if (statusCode === 515 && !current.delivered && current.restartCount < 1) {
+        current.restartCount += 1;
+        current.status = "restarting_after_stream_error";
+
+        console.log(`[${job.id}] restarting socket after 515 stream error`);
+
+        try {
+          await bootSocket(current);
+        } catch (error) {
+          current.status = "error";
+          current.error = `Restart failed: ${error.message}`;
+          console.error(`[${job.id}] restart failed:`, error);
+        }
+
+        return;
+      }
 
       if (!current.delivered) {
         current.status = "closed";
@@ -234,13 +236,41 @@ async function startPairing(number, jobId) {
           current.error = "Connection closed before session delivery.";
         }
 
-        console.error(`[${jobId}] connection closed before delivery`, {
+        console.error(`[${job.id}] connection closed before delivery`, {
           statusCode,
           error: current.error
         });
       }
     }
   });
+}
+
+async function startPairing(number, jobId) {
+  await ensureTempRoot();
+
+  const formattedNumber = cleanNumber(number);
+  const sessionDir = path.join(TEMP_ROOT, jobId);
+  await fs.ensureDir(sessionDir);
+
+  console.log(`[${jobId}] startPairing called for ${formattedNumber}`);
+
+  const job = {
+    id: jobId,
+    number: formattedNumber,
+    sessionDir,
+    socket: null,
+    status: "starting",
+    pairingCode: null,
+    createdAt: new Date().toISOString(),
+    delivered: false,
+    error: null,
+    pairingRequested: false,
+    restartCount: 0
+  };
+
+  jobs.set(jobId, job);
+
+  await bootSocket(job);
 }
 
 app.get("/", (req, res) => {
